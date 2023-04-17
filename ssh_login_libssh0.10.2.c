@@ -21,8 +21,6 @@ int interactive_shell_session(ssh_session session) {
     fd_set fds; // ファイルディスクリプタの集合を管理するための変数を追加
     int nbytes;
 
-    // 以降のコードは、前のコードと同じです
-
     // SSHチャンネルが開いている間、以下の処理を繰り返す
     while (ssh_channel_is_open(channel) && !ssh_channel_is_eof(channel)) {
         FD_ZERO(&fds); // fdsを初期化
