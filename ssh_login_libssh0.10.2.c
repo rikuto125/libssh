@@ -1,0 +1,134 @@
+#include <libssh/libssh.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <errno.h>
+#include <string.h>
+#include <sys/select.h>
+#include <unistd.h>
+
+int interactive_shell_session(ssh_session session) {
+    ssh_channel channel;
+    int rc;
+    char buffer[256];
+    fd_set fds;
+    int nbytes;
+
+    channel = ssh_channel_new(session);
+    if (channel == NULL) {
+        fprintf(stderr, "Error creating SSH channel.\n");
+        return SSH_ERROR;
+    }
+
+    rc = ssh_channel_open_session(channel);
+    if (rc != SSH_OK) {
+        fprintf(stderr, "Error opening SSH channel: %s\n", ssh_get_error(channel));
+        ssh_channel_free(channel);
+        return rc;
+    }
+
+    rc = ssh_channel_request_pty(channel);
+    if (rc != SSH_OK) {
+        fprintf(stderr, "Error requesting PTY: %s\n", ssh_get_error(channel));
+        ssh_channel_close(channel);
+        ssh_channel_free(channel);
+        return rc;
+    }
+
+    rc = ssh_channel_request_shell(channel);
+    if (rc != SSH_OK) {
+        fprintf(stderr, "Error requesting shell: %s\n", ssh_get_error(channel));
+        ssh_channel_close(channel);
+        ssh_channel_free(channel);
+        return rc;
+    }
+
+    while (ssh_channel_is_open(channel) && !ssh_channel_is_eof(channel)) {
+        FD_ZERO(&fds);
+        FD_SET(0, &fds);
+        FD_SET(ssh_get_fd(session), &fds);
+
+        if (select(ssh_get_fd(session) + 1, &fds, NULL, NULL, NULL) < 0) {
+            perror("select");
+            break;
+        }
+
+        if (FD_ISSET(0, &fds)) {
+            nbytes = read(0, buffer, sizeof(buffer));
+            if (nbytes > 0) {
+                ssh_channel_write(channel, buffer, nbytes);
+            } else if (nbytes < 0) {
+                perror("read");
+                break;
+            } else {
+                break;
+            }
+        }
+
+        if (FD_ISSET(ssh_get_fd(session), &fds)) {
+            nbytes = ssh_channel_read_timeout(channel, buffer, sizeof(buffer), 0, 100);
+            if (nbytes > 0) {
+                fwrite(buffer, 1, nbytes, stdout);
+                fflush(stdout);
+            } else if (nbytes < 0) {
+                fprintf(stderr, "Error reading from channel: %s\n", ssh_get_error(channel));
+                break;
+            }
+        }
+    }
+
+    ssh_channel_send_eof(channel);
+    ssh_channel_close(channel);
+    ssh_channel_free(channel);
+
+    return SSH_OK;
+}
+
+// main関数は前のコードと同じです
+int main(int argc, char *argv[])
+{
+    ssh_session session;
+    int rc;
+    char *password;
+
+    if (argc < 4) {
+        fprintf(stderr, "Usage: %s <hostname> <username> <password>\n", argv[0]);
+        exit(1);
+    }
+
+    session = ssh_new();
+    if (session == NULL) {
+        fprintf(stderr, "Error creating SSH session.\n");
+        exit(1);
+    }
+
+    ssh_options_set(session, SSH_OPTIONS_HOST, argv[1]);
+    ssh_options_set(session, SSH_OPTIONS_USER, argv[2]);
+    password = argv[3];
+
+    rc = ssh_connect(session);
+    if (rc != SSH_OK) {
+        fprintf(stderr, "Error connecting to SSH server: %s\n", ssh_get_error(session));
+        ssh_free(session);
+        exit(1);
+    }
+
+    rc = ssh_userauth_password(session, NULL, password);
+    if (rc != SSH_AUTH_SUCCESS) {
+        fprintf(stderr, "Error authenticating with password: %s\n", ssh_get_error(session));
+        ssh_disconnect(session);
+        ssh_free(session);
+        exit(1);
+    }
+
+    printf("Authenticated successfully!\n");
+
+    // Start an interactive shell session
+    if (interactive_shell_session(session) != SSH_OK) {
+        fprintf(stderr, "Error in interactive shell session.\n");
+    }
+
+    ssh_disconnect(session);
+    ssh_free(session);
+
+    return 0;
+}
